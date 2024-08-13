@@ -4,7 +4,6 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
-import os
 import requests
 from urllib.parse import quote
 from base64 import b64encode
@@ -50,10 +49,7 @@ class GraylogQuery(GraylogRequests):
 
     def extract_ips(self, db_results: dict) -> list:
         """Extract just the ip address from each row of the 'show shun' command"""
-        # ips_to_ban = set()
         ips_to_ban = [row[0] for row in db_results["datarows"]]
-        # for row in db_results["datarows"]:
-        #     ips_to_ban.add(row[0])
         return ips_to_ban
 
     def get_ips_to_ban(self, query: str, stream_id: str, timerange: str, fields: str, size=100):
