@@ -7,31 +7,35 @@ __metaclass__ = type
 import requests
 from urllib.parse import quote
 from base64 import b64encode
+from json import dumps
 
 
 class GraylogRequests:
 
     def __init__(self, graylog_api_key) -> None:
-        self.api_client = self.create_session(self._basic_auth(graylog_api_key, "token"))
+        self.creds = self._basic_auth(graylog_api_key, "token")
 
-    def create_session(self, b64_credentials: str) -> str:
-        """Helper function to set the auth token and accept headers in the API request"""
-        http_session = requests.Session()
-        http_session.headers = {
+    def _headers(self):
+        return {
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent": f"Python-AnyBanned",
-            "Authorization": b64_credentials,
+            "X-Requested-By": "AnyBanned",
+            "Authorization": self.creds,
         }
-        return http_session
 
-    def get(self, url: str, path: str = None, query: dict = None):
+    def post(self, url: str, path: str = None, data: dict = None) -> dict:
+        uri = url if path is None else f"{url}{path}"
+        print(data)
+        result = requests.post(url=uri, json=data, headers=self._headers())
+        result.raise_for_status()
+        if result.json():
+            return result.json()
+
+    def get(self, url: str, path: str = None, query: dict = None) -> dict:
         """Given the API endpoint, path, and query, return the json payload from the API"""
-        uri = url if path is None else f"{url}/{path}"
-        result = self.api_client.get(
-            url=uri,
-            params=query,
-        )
+        uri = url if path is None else f"{url}{path}"
+        result = requests.get(url=uri, params=query, headers=self._headers())
         result.raise_for_status()
         if result.json():
             return result.json()
@@ -43,6 +47,32 @@ class GraylogRequests:
 
 class GraylogQuery(GraylogRequests):
 
+    # TODO: Build aggregations using: POST /api/search/aggregate
+    # {
+    #     "query": "streams:66a3a847249c93756c697203",
+    #     "streams": [
+    #         "66a3a847249c93756c697203"
+    #     ],
+    #     "timerange": {
+    #         "type": "keyword",
+    #         "keyword": "last eight hours"
+    #     },
+    #     "group_by": [
+    #         {
+    #             "field": "userIP"
+    #         },
+    #    {
+    #        "field": "userIP_country_code"
+    #    }
+    #     ],
+    #     "metrics": [
+    #         {
+    #             "function": "count",
+    #             "field": "userIP"
+    #         }
+    #     ]
+    # }
+
     def __init__(self, graylog_url, graylog_api_key) -> None:
         super().__init__(graylog_api_key)
         self.graylog_url = graylog_url
@@ -52,9 +82,9 @@ class GraylogQuery(GraylogRequests):
         ips_to_ban = [row[0] for row in db_results["datarows"]]
         return ips_to_ban
 
-    def get_ips_to_ban(self, query: str, stream_id: str, timerange: str, fields: str, size=100):
+    # def get_ips_to_ban(self, query: str, stream_id: str, timerange: str, fields: str, size=100):
+    def get_ips_to_ban(self, path: str, data: dict, size=100) -> list:
         """Query graylog for logs for the given stream in the given timerange and return 'size' number of logs"""
-        q = {"query": query, "streams": stream_id, "timerange": timerange, "fields": fields, "size": size}
-        results = self.get(self.graylog_url, "/api/search/messages", query=q)
-        ips_to_ban = [ip[0] for ip in results["datarows"]]
-        return set(ips_to_ban)
+        results = self.post(self.graylog_url, path=path, data=data)
+        ips_to_ban = [ip for ip in results["datarows"] if ip[0] != "(Empty Value)"]
+        return ips_to_ban
