@@ -5,9 +5,7 @@ from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 import requests
-from urllib.parse import quote
 from base64 import b64encode
-from json import dumps
 
 
 class GraylogRequests:
@@ -16,6 +14,7 @@ class GraylogRequests:
         self.creds = self._basic_auth(graylog_api_key, "token")
 
     def _headers(self):
+        """Build the required headers that Graylog expects"""
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -25,15 +24,15 @@ class GraylogRequests:
         }
 
     def post(self, url: str, path: str = None, data: dict = None) -> dict:
+        """Post operation to Graylog"""
         uri = url if path is None else f"{url}{path}"
-        print(data)
         result = requests.post(url=uri, json=data, headers=self._headers())
         result.raise_for_status()
         if result.json():
             return result.json()
 
     def get(self, url: str, path: str = None, query: dict = None) -> dict:
-        """Given the API endpoint, path, and query, return the json payload from the API"""
+        """GET operation to Graylog"""
         uri = url if path is None else f"{url}{path}"
         result = requests.get(url=uri, params=query, headers=self._headers())
         result.raise_for_status()
@@ -41,50 +40,35 @@ class GraylogRequests:
             return result.json()
 
     def _basic_auth(self, username, password):
+        """Give a Graylog API key, return the base 64 creds"""
         token = b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
         return f"Basic {token}"
 
 
 class GraylogQuery(GraylogRequests):
 
-    # TODO: Build aggregations using: POST /api/search/aggregate
-    # {
-    #     "query": "streams:66a3a847249c93756c697203",
-    #     "streams": [
-    #         "66a3a847249c93756c697203"
-    #     ],
-    #     "timerange": {
-    #         "type": "keyword",
-    #         "keyword": "last eight hours"
-    #     },
-    #     "group_by": [
-    #         {
-    #             "field": "userIP"
-    #         },
-    #    {
-    #        "field": "userIP_country_code"
-    #    }
-    #     ],
-    #     "metrics": [
-    #         {
-    #             "function": "count",
-    #             "field": "userIP"
-    #         }
-    #     ]
-    # }
-
     def __init__(self, graylog_url, graylog_api_key) -> None:
         super().__init__(graylog_api_key)
         self.graylog_url = graylog_url
 
-    def extract_ips(self, db_results: dict) -> list:
-        """Extract just the ip address from each row of the 'show shun' command"""
-        ips_to_ban = [row[0] for row in db_results["datarows"]]
-        return ips_to_ban
+    def get_recent_login_failures(self, query: str, stream_id: str, timerange: str, fields: str = "userIP", size=150):
+        """Query graylog for the login failures for the last x number of seconds"""
+        q = {"query": query, "streams": stream_id, "timerange": timerange, "fields": fields, "size": size}
+        results = self.get(self.graylog_url, "/api/search/messages", query=q)
+        return [ip[0] for ip in results["datarows"]]
 
-    # def get_ips_to_ban(self, query: str, stream_id: str, timerange: str, fields: str, size=100):
-    def get_ips_to_ban(self, path: str, data: dict, size=100) -> list:
-        """Query graylog for logs for the given stream in the given timerange and return 'size' number of logs"""
-        results = self.post(self.graylog_url, path=path, data=data)
-        ips_to_ban = [ip for ip in results["datarows"] if ip[0] != "(Empty Value)"]
-        return ips_to_ban
+    def get_ip_history(self, search_ip: str, stream_id: str) -> list:
+        """Query graylog for this IP addresses history for the given stream in the given timerange"""
+        search = {
+            "query": f'streams:{stream_id} AND userIP: "{search_ip}"',
+            "streams": [stream_id],
+            "timerange": {"type": "keyword", "keyword": "last twentyfour hours"},
+            "group_by": [{"field": "userIP"}, {"field": "userIP_country_code"}],
+            "metrics": [{"function": "count", "field": "userIP"}],
+        }
+        results = self.post(self.graylog_url, path="/api/search/aggregate", data=search)
+        return {
+            "ip": results["datarows"][0][0],
+            "country": results["datarows"][0][1],
+            "fail_count": results["datarows"][0][2],
+        }

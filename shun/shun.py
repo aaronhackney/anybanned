@@ -62,9 +62,3 @@ class CiscoSecureShun:
         """Given a list of shun statements, return"""
         shunned = [[line.split(" ")[2] for line in row] for row in cli_output]
         return shunned[0] if len(shunned) else None
-
-    def calculate_new_shuns(self, syslog_ips: list, shunned_ips: list) -> list:
-        """Compare the existing FW shun list to the proposed shun additions and only return the needed shun IPs"""
-        new_shuns = list(set(syslog_ips) - set(shunned_ips))
-        self.logger.debug(f"New shuns to issue: {len(new_shuns)}")
-        return ["shun " + ip for ip in new_shuns]

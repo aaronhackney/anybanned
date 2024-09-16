@@ -1,106 +1,115 @@
-import os
+# Apache License v2.0+ (see LICENSE or https://www.apache.org/licenses/LICENSE-2.0)
+
+from __future__ import absolute_import, division, print_function
+
+__metaclass__ = type
+
 import requests
-import helpers
-from dotenv import load_dotenv
-from shun.shun import CiscoSecureShun, CiscoSecureDevices
-from graylog.graylog import GraylogQuery
+import ipaddress
 from json import loads
+from dotenv import dotenv_values
+from graylog.graylog import GraylogQuery
+from shun.shun import CiscoSecureShun, CiscoSecureDevices
 
-# Load the needed environment variables from a .env file
-load_dotenv()
+# Load the needed variables from a .env file
+config = dotenv_values(".env")
+DEVICE_TYPE = CiscoSecureDevices[config.get("DEVICE_TYPE")].value
+DEVICE_IP = config.get("DEVICE_IP")
+DEVICE_USER = config.get("DEVICE_USER")
+DEVICE_PASS = config.get("DEVICE_PASS")
+SCRIPT_LOG_LEVEL = config.get("SCRIPT_LOG_LEVEL").upper()
+SSH_SESSION_LOG = config.get("SSH_SESSION_LOG")
+SCRIPT_LOG = config.get("SCRIPT_LOG")
+PAGE_SIZE = 150
 
-# Set up the constants from the environment variables for easier readability
-DEVICE_TYPE = (
-    CiscoSecureDevices.FTD.value if os.getenv("DEVICE_TYPE").upper() == "FTD" else CiscoSecureDevices.ASA.value
-)
-DEVICE_IP = os.getenv("DEVICE_IP")
-DEVICE_USER = os.getenv("DEVICE_USER")
-DEVICE_PASS = os.getenv("DEVICE_PASS")
-SCRIPT_LOG_LEVEL = os.getenv("SCRIPT_LOG_LEVEL").upper()
-SSH_SESSION_LOG = os.getenv("SSH_SESSION_LOG")
-SCRIPT_LOG = os.getenv("SCRIPT_LOG")
-GRAYLOG_STREAM_ID = os.getenv("GRAYLOG_STREAM_ID")
-TIME_INTERVAL = os.getenv("TIME_INTERVAL")
-BAN_SETTINGS = loads(os.getenv("BAN_SETTINGS"))
+# Optional Graylog integration
+GRAYLOG_URL = config.get("GRAYLOG_URL")
+GRAYLOG_API_KEY = config.get("GRAY_APIKEY")
+GRAYLOG_STREAM_ID = config.get("GRAYLOG_STREAM_ID")
+GRAYLOG_FAIL_QUERY = config.get("GRAYLOG_FAIL_QUERY")
+GRAYLOG_TIME_RANGE = config.get("GRAYLOG_TIME_RANGE")
+GRAYLOG_BAN_SETTINGS = loads(config.get("GRAYLOG_BAN_SETTINGS")) if config.get("GRAYLOG_BAN_SETTINGS") else None
 
-if os.getenv("GRAYLOG_ENABLE"):
-    GRAYLOG_URL = os.getenv("GRAYLOG_URL")
-    GRAYLOG_API_KEY = os.getenv("GRAY_APIKEY")
-
-if os.getenv("IP_WEB_FEED_ENABLED"):
-    IP_WEB_FEED_URL = os.getenv("IP_WEB_FEED_URL")
+# Optional web feed integration
+IP_WEB_FEED_URL = config.get("IP_WEB_FEED_URL")
 
 
-def get_graylog_ips_to_ban(url: str, token: str, stream_id: str, time_interval: str) -> list:
-    """Query the Graylog syslog server for the IP addresses we need to ban"""
-    graylog_client = GraylogQuery(url, token)
-    search = {
-        "query": f"streams:{stream_id}",
-        "streams": [stream_id],
-        "timerange": {"type": "keyword", "keyword": time_interval},
-        "group_by": [{"field": "userIP"}, {"field": "userIP_country_code"}],
-        "metrics": [{"function": "count", "field": "userIP"}],
-    }
-    return graylog_client.get_ips_to_ban("/api/search/aggregate", search)
+def get_shun_list(candidate_ips: list, ban_settings: dict) -> list:
+    """Given a list of IP history from the logging server, determine if it meets the criteria for shunning"""
+    shun_me = list()
+    for candidate_ip in candidate_ips:
+        if candidate_ip["country"] in ban_settings:
+            if candidate_ip["fail_count"] >= ban_settings[candidate_ip["country"]]:
+                shun_me.append(candidate_ip["ip"])
+                print(f"Shun candidate: {candidate_ip}")
+        elif candidate_ip["fail_count"] >= ban_settings["default"]:
+            shun_me.append(candidate_ip["ip"])
+            print(f"Shun candidate: {candidate_ip}")
+        else:
+            print(f"{candidate_ip} did not meet the threshold for shunning yet...")
+    return shun_me
+
+
+def is_ip(address: str) -> bool:
+    try:
+        ipaddress.ip_address(address)
+        return True
+    except ValueError:
+        return False
 
 
 def get_web_feed_ips_to_ban(web_feed: str) -> list:
     results = requests.get(web_feed)
     results.raise_for_status()
-    return [line for line in results.text.splitlines() if helpers.is_ip_address(line)]
-
-
-def is_should_shun(ip: list, ban_settings) -> bool:
-    """Check to see if the number of login failures from the IP address meets our threashold for banishment"""
-    for key, value in ban_settings.items():
-        if ip[1].lower() == key.lower():
-            if ip[2] == 1:
-                pass
-            if ip[2] >= value:
-                return True
-    return False
+    return [line for line in results.text.splitlines() if is_ip(line)]
 
 
 def main():
-    filtered_ips_to_ban = list()
-    graylog_ips_to_ban = list()
-    web_feed_ips_to_ban = list()
+    graylog_recent_failures = list()
+    graylog_ip_history = list()
+    candidate_shun_list = list()
 
     if GRAYLOG_URL and GRAYLOG_API_KEY:
-        graylog_ips_to_ban = get_graylog_ips_to_ban(GRAYLOG_URL, GRAYLOG_API_KEY, GRAYLOG_STREAM_ID, TIME_INTERVAL)
-        # New parameters: How many attempts before we ban? Country to ban by default?
-        for ip in graylog_ips_to_ban:
-            if is_should_shun(ip, BAN_SETTINGS):
-                filtered_ips_to_ban.append(ip)
-    del graylog_ips_to_ban
+        graylog_client = GraylogQuery(GRAYLOG_URL, GRAYLOG_API_KEY)
+
+        # Get the login failures for the last GRAYLOG_TIME_RANGE seconds
+        graylog_recent_failures = graylog_client.get_recent_login_failures(
+            GRAYLOG_FAIL_QUERY, GRAYLOG_STREAM_ID, GRAYLOG_TIME_RANGE
+        )
+
+        # for each IP in the list, get the aggregation....
+        for ip in set(graylog_recent_failures):
+            graylog_ip_history.append(graylog_client.get_ip_history(ip, GRAYLOG_STREAM_ID))
+
+        # Make the decison to shun or not to shun based on .env settings
+        candidate_shun_list = candidate_shun_list + get_shun_list(graylog_ip_history, GRAYLOG_BAN_SETTINGS)
 
     if IP_WEB_FEED_URL:
-        web_feed_ips_to_ban = get_web_feed_ips_to_ban(IP_WEB_FEED_URL)
+        candidate_shun_list = candidate_shun_list + get_web_feed_ips_to_ban(IP_WEB_FEED_URL)
 
-    # Client to SSH to firewall for issuiung shun commands
-    shun_client = CiscoSecureShun(
-        DEVICE_TYPE,
-        DEVICE_IP,
-        DEVICE_USER,
-        DEVICE_PASS,
-        script_log_level=SCRIPT_LOG_LEVEL,
-        ssh_session_log=SSH_SESSION_LOG,
-        script_log=SCRIPT_LOG,
-    )
+    # If we have candidates to shun, issue the shuns to the firewall if they do not already exist
+    if candidate_shun_list:
 
-    graylog_ips_to_ban = [item[0] for item in filtered_ips_to_ban]
-    # TODO: log the ip, geoip, and number of failures
-    for ips_to_ban in [graylog_ips_to_ban]:
+        # Client to SSH to firewall for issuiung show shun and shun commands
+        shun_client = CiscoSecureShun(
+            DEVICE_TYPE,
+            DEVICE_IP,
+            DEVICE_USER,
+            DEVICE_PASS,
+            script_log_level=SCRIPT_LOG_LEVEL,
+            ssh_session_log=SSH_SESSION_LOG,
+            script_log=SCRIPT_LOG,
+        )
 
-        # Query firewall for shuns that already exist
+        # Get list of IPs already shunned on the firewall
         shunned = shun_client.extract_shunned_ips(shun_client.run_cmd(["show shun"]))
         shun_client.logger.debug(f"{len(shunned)} existing shuns found on firewall")
 
-        # Remove the existing IPs from the ips_to_ban and shun the remaining IPs on the firewall
-        shuns_issued = shun_client.run_cmd(shun_client.calculate_new_shuns(ips_to_ban, shunned))
-
-        for cli_shun in shuns_issued:
-            shun_client.logger.debug(cli_shun)
+        # Get the final list of IP Addresses to shun and make it so
+        for ip in list(set(candidate_shun_list) - set(shunned)):
+            shuns_issued = shun_client.run_cmd(f"shun {ip}")
+            for cli_shun in shuns_issued:
+                shun_client.logger.debug(cli_shun)
 
 
 if __name__ == "__main__":
