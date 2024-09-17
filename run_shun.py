@@ -73,9 +73,7 @@ def main():
         graylog_client = GraylogQuery(GRAYLOG_URL, GRAYLOG_API_KEY)
 
         # Get the login failures for the last GRAYLOG_TIME_RANGE seconds
-        graylog_recent_failures = graylog_client.get_recent_login_failures(
-            GRAYLOG_FAIL_QUERY, GRAYLOG_STREAM_ID, GRAYLOG_TIME_RANGE
-        )
+        graylog_recent_failures = graylog_client.get_recent_login_failures(GRAYLOG_STREAM_ID)
 
         # for each IP in the list, get the aggregation....
         for ip in set(graylog_recent_failures):
@@ -105,11 +103,16 @@ def main():
         shunned = shun_client.extract_shunned_ips(shun_client.run_cmd(["show shun"]))
         shun_client.logger.debug(f"{len(shunned)} existing shuns found on firewall")
 
-        # Get the final list of IP Addresses to shun and make it so
+        # Build the final list of IP Addresses to shun and make it so
+        shun_commands = list()
         for ip in list(set(candidate_shun_list) - set(shunned)):
-            shuns_issued = shun_client.run_cmd(f"shun {ip}")
-            for cli_shun in shuns_issued:
-                shun_client.logger.debug(cli_shun)
+            shun_commands.append(f"shun {ip}")
+
+        # Issue the shuns and log
+        shuns_issued = shun_client.run_cmd(shun_commands)
+        for cli_shun in shuns_issued:
+            print(cli_shun)
+            shun_client.logger.debug(cli_shun)
 
 
 if __name__ == "__main__":

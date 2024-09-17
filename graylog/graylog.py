@@ -51,10 +51,23 @@ class GraylogQuery(GraylogRequests):
         super().__init__(graylog_api_key)
         self.graylog_url = graylog_url
 
-    def get_recent_login_failures(self, query: str, stream_id: str, timerange: str, fields: str = "userIP", size=150):
-        """Query graylog for the login failures for the last x number of seconds"""
-        q = {"query": query, "streams": stream_id, "timerange": timerange, "fields": fields, "size": size}
-        results = self.get(self.graylog_url, "/api/search/messages", query=q)
+    # TODO: To use relative ranges we many need to use a POST rather than a GET - Test in Postman
+    # def get_recent_login_failures(self, query: str, stream_id: str, timerange: str, fields: str = "userIP", size=150):
+    #     """Query graylog for the login failures for the last x number of seconds"""
+    #     q = {"query": query, "streams": stream_id, "timerange": timerange, "fields": fields, "size": size}
+    #     results = self.get(self.graylog_url, "/api/search/messages", query=q)
+    #     return [ip[0] for ip in results["datarows"]]
+
+    def get_recent_login_failures(self, stream_id: str, size: int = 150) -> list:
+        """Query graylog for the last 5 minutes of login failures"""
+        search = {
+            "query": f'ftdLogMessage:113015 AND reason:"User was not found"',
+            "streams": [stream_id],
+            "timerange": {"type": "keyword", "keyword": "last five minutes"},
+            "fields": ["userIP"],
+            "size": 150,
+        }
+        results = self.post(self.graylog_url, path="/api/search/messages", data=search)
         return [ip[0] for ip in results["datarows"]]
 
     def get_ip_history(self, search_ip: str, stream_id: str) -> list:
